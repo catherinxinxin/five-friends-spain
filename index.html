@@ -23,21 +23,50 @@
 </main>
 <iframe class="journal" id="journal" title="五个人的西班牙旅行记录" sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer" hidden></iframe><button class="lock" id="lock" type="button" hidden>锁定</button>
 <script>
-const settings={"salt":"H1LdmH1igTsEGrzmrjiU4A==","iv":"AXzStI2yPkYPET9l","iterations":600000};
+const settings={"salt":"XOk76QKMJm6OrR10ARekpA==","iv":"iI87r4C6RqX9mFs+","iterations":600000,"vaultBytes":5480259,"vaultVersion":"d33cf87a7f2cde3d"};
 const form=document.getElementById('unlock'),input=document.getElementById('password'),message=document.getElementById('message'),submit=document.getElementById('submit'),frame=document.getElementById('journal'),entry=document.getElementById('entry'),lock=document.getElementById('lock');
 const unbase64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
 document.getElementById('toggle').addEventListener('click',e=>{const visible=input.type==='password';input.type=visible?'text':'password';e.currentTarget.textContent=visible?'隐藏':'显示';e.currentTarget.setAttribute('aria-pressed',String(visible));});
-let vault;
+let vault,vaultPromise,downloadStatus='',phase='';
+function reportDownload(loaded,total){
+downloadStatus=total?`正在加载相册 ${Math.min(100,Math.floor(loaded/total*100))}%`:`正在加载相册 ${(loaded/1048576).toFixed(1)} MB`;
+if(phase==='download'||(!submit.disabled&&!message.classList.contains('error')&&!entry.hidden))message.textContent=downloadStatus;
+}
+function loadVault(){
+if(vault)return Promise.resolve(vault);
+if(vaultPromise)return vaultPromise;
+vaultPromise=(async()=>{
+const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),120000);
+try{
+const response=await fetch(`./vault.bin?v=${settings.vaultVersion}`,{cache:'force-cache',signal:controller.signal});
+if(!response.ok)throw new Error('network');
+const total=Number(response.headers.get('Content-Length'))||settings.vaultBytes;
+if(response.body){
+const reader=response.body.getReader(),chunks=[];let loaded=0;reportDownload(0,total);
+while(true){const {done,value}=await reader.read();if(done)break;chunks.push(value);loaded+=value.byteLength;reportDownload(loaded,total);}
+const combined=new Uint8Array(loaded);let offset=0;
+for(const chunk of chunks){combined.set(chunk,offset);offset+=chunk.byteLength;}
+vault=combined.buffer;
+}else{vault=await response.arrayBuffer();}
+if(!submit.disabled&&!message.classList.contains('error'))message.textContent='相册已准备好，输入密码即可查看。';
+return vault;
+}finally{clearTimeout(timer);}
+})().catch(error=>{vaultPromise=null;throw error;});
+return vaultPromise;
+}
+loadVault().catch(()=>{if(!submit.disabled&&!message.classList.contains('error'))message.textContent='相册预加载未完成，输入密码后重试。';});
 form.addEventListener('submit',async e=>{e.preventDefault();if(submit.disabled)return;submit.disabled=true;message.className='message';message.textContent='正在打开旅行…';input.setAttribute('aria-invalid','false');let decrypted;
 try{if(!crypto.subtle||typeof DecompressionStream==='undefined')throw new Error('unsupported');
 const material=await crypto.subtle.importKey('raw',new TextEncoder().encode(input.value),'PBKDF2',false,['deriveKey']);
-const key=await crypto.subtle.deriveKey({name:'PBKDF2',salt:unbase64(settings.salt),iterations:settings.iterations,hash:'SHA-256'},material,{name:'AES-GCM',length:256},false,['decrypt']);
-if(!vault){const response=await fetch('./vault.bin',{cache:'no-store'});if(!response.ok)throw new Error('network');vault=await response.arrayBuffer();}
+phase='download';message.textContent=vault?'正在解锁相册…':downloadStatus||'正在加载相册…';
+const [key]=await Promise.all([crypto.subtle.deriveKey({name:'PBKDF2',salt:unbase64(settings.salt),iterations:settings.iterations,hash:'SHA-256'},material,{name:'AES-GCM',length:256},false,['decrypt']),loadVault()]);
+phase='decrypt';message.textContent='正在解锁相册…';
 try{decrypted=await crypto.subtle.decrypt({name:'AES-GCM',iv:unbase64(settings.iv),additionalData:new TextEncoder().encode('spain-journal:v1')},key,vault);}catch{throw new Error('password');}
 const stream=new Blob([decrypted]).stream().pipeThrough(new DecompressionStream('gzip'));
+message.textContent='正在打开相册…';
 const html=await new Response(stream).text();frame.srcdoc=html;frame.hidden=false;lock.hidden=false;entry.hidden=true;input.value='';message.textContent='';frame.focus();
 }catch(error){message.className='message error';message.textContent=error.message==='password'?'密码不对，请再试一次。':error.message==='unsupported'?'请使用较新的浏览器打开。':'暂时无法打开，请稍后重试。';if(error.message==='password'){input.setAttribute('aria-invalid','true');input.focus();input.select();}}
-finally{decrypted=null;submit.disabled=false;}});
+finally{decrypted=null;phase='';submit.disabled=false;}});
 lock.addEventListener('click',()=>{frame.srcdoc='';frame.hidden=true;lock.hidden=true;entry.hidden=false;message.textContent='';input.value='';input.focus();});
 </script>
 </body></html>
